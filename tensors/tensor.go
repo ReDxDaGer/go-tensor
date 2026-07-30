@@ -2,16 +2,21 @@ package tensor
 
 import (
 	"fmt"
-	"go-tensor/activations"
 	"math/rand"
 	"strings"
 	"time"
+
+	"github.com/redxdager/go-tensor/activations"
 )
 
 type Tensor struct {
 	Data    []float64
 	Shape   []int
 	Strides []int
+}
+
+type Stringer interface {
+	String() string
 }
 
 var rng = rand.New(rand.NewSource((time.Now().UnixNano())))
