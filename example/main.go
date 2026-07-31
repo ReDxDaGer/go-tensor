@@ -3,74 +3,98 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 
+	"github.com/redxdager/go-tensor/autograd"
 	"github.com/redxdager/go-tensor/dataset"
+	tensor "github.com/redxdager/go-tensor/tensors"
 )
 
-// createDummyCSV writes a small sample dataset to disk if it doesn't
-// already exist, so the example runs out of the box with no setup.
-func createDummyCSV(filename string) error {
-	if _, err := os.Stat(filename); err == nil {
-		// File already exists — nothing to do.
-		return nil
+func main() {
+
+	fmt.Println("\n[1/4] Loading CSV Dataset & Initializing DataLoader...")
+
+	// Load dataset: target is column index 2
+	ds, err := dataset.LoadCSVDataset("data.csv", 2, true)
+	if err != nil {
+		log.Fatalf("Failed to load CSV dataset: %v", err)
 	}
 
-	content := `feature1,feature2,feature3,label
-1.0,2.0,3.0,0.0
-4.0,5.0,6.0,1.0
-7.0,8.0,9.0,0.0
-10.0,11.0,12.0,1.0
-13.0,14.0,15.0,0.0
-16.0,17.0,18.0,1.0
-19.0,20.0,21.0,0.0
-22.0,23.0,24.0,1.0
-25.0,26.0,27.0,0.0
-28.0,29.0,30.0,1.0`
+	fmt.Printf("✓ Dataset loaded successfully! Total Samples: %d\n", ds.Len())
 
-	return os.WriteFile(filename, []byte(content), 0644)
+	// Initialize DataLoader
+	loader := dataset.NewDataLoader(ds, 2, true)
+
+	fmt.Println("\n[2/4] Initializing Model Weights & Biases (RequiresGrad = true)...")
+
+	// Input Dim = 2, Hidden Dim = 3, Output Dim = 1
+	W1 := tensor.Randn(2, 3)
+	W1.RequiresGrad = true
+	W1.Grad = tensor.Zeros(W1.Shape...)
+
+	B1 := tensor.Zeros(1, 3)
+	B1.RequiresGrad = true
+	B1.Grad = tensor.Zeros(B1.Shape...)
+
+	W2 := tensor.Randn(3, 1)
+	W2.RequiresGrad = true
+	W2.Grad = tensor.Zeros(W2.Shape...)
+
+	B2 := tensor.Zeros(1, 1)
+	B2.RequiresGrad = true
+	B2.Grad = tensor.Zeros(B2.Shape...)
+
+	fmt.Printf("  - W1 Shape: %v | B1 Shape: %v\n", W1.Shape, B1.Shape)
+	fmt.Printf("  - W2 Shape: %v | B2 Shape: %v\n", W2.Shape, B2.Shape)
+
+	fmt.Println("\n[3/4] Running Forward Pass across DataLoader Batches...")
+
+	batchCount := 0
+	for loader.HasNext() {
+		xBatch, yBatch, ok := loader.NextBatch()
+		if !ok {
+			break
+		}
+		batchCount++
+
+		fmt.Printf("\n--- Processing Batch #%d (Batch Size: %d) ---\n", batchCount, xBatch.Shape[0])
+
+		// Reset accumulated gradients before forward pass
+		autograd.ZeroGrad(W1, B1, W2, B2)
+
+		// Layer 1: H1 = ReLU( (X @ W1) + B1 )
+		xw1 := autograd.MatMul(xBatch, W1)
+		z1 := autograd.Add(xw1, B1)
+		h1 := autograd.ReLU(z1)
+
+		// Layer 2 (Output): Pred = Sigmoid( (H1 @ W2) + B2 )
+		h1w2 := autograd.MatMul(h1, W2)
+		z2 := autograd.Add(h1w2, B2)
+		pred := autograd.Sigmoid(z2)
+
+		// Compute Loss: MSE = Mean( (Pred - Target)^2 )
+		diff := autograd.Add(pred, neg(yBatch)) // Pred - Y
+		sqDiff := autograd.MatMul(tensor.Transpose(diff), diff)
+		loss := autograd.Mean(sqDiff)
+
+		fmt.Printf("  Batch %d Loss: %.6f\n", batchCount, loss.Data[0])
+
+		fmt.Println("  Executing Autograd Reverse Topological Backward Pass...")
+		autograd.Backward(loss)
+
+		fmt.Println("  ✓ Gradients Computed:")
+		fmt.Printf("    • dL/dW1 (Shape %v):\n%v\n", W1, W1)
+		fmt.Printf("    • dL/dB1 (Shape %v):\n%v\n", B1.Grad.Shape, B1.Grad.Data)
+		fmt.Printf("    • dL/dW2 (Shape %v):\n%v\n", W2.Grad.Shape, W2.Grad.Data)
+		fmt.Printf("    • dL/dB2 (Shape %v):\n%v\n", B2.Grad.Shape, B2.Grad.Data)
+	}
+
 }
 
-func main() {
-	const csvPath = "data.csv"
-
-	// 1. Ensure sample data exists.
-	if err := createDummyCSV(csvPath); err != nil {
-		log.Fatalf("failed to create dummy CSV: %v", err)
+// Negation helper function: -X
+func neg(t *tensor.Tensor) *tensor.Tensor {
+	outData := make([]float64, len(t.Data))
+	for i, val := range t.Data {
+		outData[i] = -val
 	}
-
-	// 2. Load the dataset from CSV.
-	// Signature: LoadCSVDataset(path string, targetCol int, hasHeader bool)
-	fmt.Println("=== 1. Loading CSV Dataset ===")
-	ds, err := dataset.LoadCSVDataset(csvPath, 3, true)
-	if err != nil {
-		log.Fatalf("error loading CSV dataset: %v", err)
-	}
-	fmt.Printf("Loaded dataset with %d total samples.\n\n", ds.Len())
-
-	// 3. Wrap it in a DataLoader for shuffled, batched iteration.
-	const batchSize = 4
-	const shuffle = true
-	loader := dataset.NewDataLoader(ds, batchSize, shuffle)
-
-	fmt.Println("=== 2. Iterating Batches Across 2 Epochs ===")
-	for epoch := 1; epoch <= 2; epoch++ {
-		fmt.Printf("\n--- Epoch %d ---\n", epoch)
-		loader.Reset() // Resets the cursor and reshuffles indices.
-
-		batchNum := 1
-		for loader.HasNext() {
-			xBatch, yBatch, ok := loader.NextBatch()
-			if !ok {
-				break
-			}
-
-			fmt.Printf("[Batch %d]\n", batchNum)
-			fmt.Printf("  Inputs:\n%v\n", xBatch)
-			fmt.Printf("  Targets:\n%v\n", yBatch)
-			batchNum++
-		}
-	}
-
-	fmt.Println("\n✅ CSV loading and DataLoader verification complete!")
+	return tensor.FromSlice(outData, t.Shape...)
 }
