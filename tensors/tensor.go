@@ -10,10 +10,16 @@ import (
 )
 
 type Tensor struct {
-	Data    []float64
-	Shape   []int
-	Strides []int
+	Data         []float64
+	Shape        []int
+	Strides      []int
+	RequiresGrad bool
+	Grad         *Tensor
+	Parents      []*Tensor
+	Backward     func()
 }
+
+type TensorOption func(*Tensor)
 
 type Stringer interface {
 	String() string
@@ -23,6 +29,13 @@ var rng = rand.New(rand.NewSource((time.Now().UnixNano())))
 
 func ManualSeed(seed int64) {
 	rng = rand.New(rand.NewSource(seed))
+}
+
+func WithGrad() TensorOption {
+	return func(t *Tensor) {
+		t.RequiresGrad = true
+		t.Grad = Zeros(t.Shape...)
+	}
 }
 
 func calcStrides(shape []int) []int {
@@ -52,6 +65,14 @@ func New(shape ...int) *Tensor {
 	}
 }
 
+func NewWithOpts(shape []int, opts ...TensorOption) *Tensor {
+	t := New(shape...)
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
 func Zeros(shape ...int) *Tensor {
 	return New(shape...)
 }
@@ -71,6 +92,7 @@ func Rand(shape ...int) *Tensor {
 	}
 	return t
 }
+
 func Randn(shape ...int) *Tensor {
 	t := New(shape...)
 	for i := range t.Data {
@@ -78,9 +100,14 @@ func Randn(shape ...int) *Tensor {
 	}
 	return t
 }
+
+func (t *Tensor) Size() int {
+	return totalSize(t.Shape)
+}
+
 func FromSlice(data []float64, shape ...int) *Tensor {
-	if totalSize(shape) != len(data) {
-		panic(fmt.Sprintf("shape %v does not match data length %d", shape, len(data)))
+	if len(data) != totalSize(shape) {
+		panic("tensors: data length does not match tensor shape dimensions")
 	}
 	t := New(shape...)
 	copy(t.Data, data)
@@ -128,14 +155,43 @@ func (t *Tensor) Reshape(newShape ...int) *Tensor {
 }
 
 func Add(a, b *Tensor) *Tensor {
-	if len(a.Data) != len(b.Data) {
-		panic("tensor shape mismatched for addition need the same shape nxn !")
+	// 1. Exact Shape Match
+	if sameShape(a.Shape, b.Shape) {
+		outData := make([]float64, len(a.Data))
+		for i := range a.Data {
+			outData[i] = a.Data[i] + b.Data[i]
+		}
+		return FromSlice(outData, a.Shape...)
 	}
-	out := New(a.Shape...)
-	for i := range a.Data {
-		out.Data[i] = a.Data[i] + b.Data[i]
+
+	// 2. Broadcast Bias: A is [Batch, Dim], B is [1, Dim]
+	if len(a.Shape) == 2 && len(b.Shape) == 2 && b.Shape[0] == 1 && a.Shape[1] == b.Shape[1] {
+		batchSize := a.Shape[0]
+		dim := a.Shape[1]
+		outData := make([]float64, len(a.Data))
+
+		for i := 0; i < batchSize; i++ {
+			for j := 0; j < dim; j++ {
+				idx := i*dim + j
+				outData[idx] = a.Data[idx] + b.Data[j]
+			}
+		}
+		return FromSlice(outData, a.Shape...)
 	}
-	return out
+
+	panic(fmt.Sprintf("tensors: shape mismatch for addition (%v vs %v)", a.Shape, b.Shape))
+}
+
+func sameShape(s1, s2 []int) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+	for i := range s1 {
+		if s1[i] != s2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func MatMul(a, b *Tensor) *Tensor {
@@ -163,6 +219,23 @@ func MatMul(a, b *Tensor) *Tensor {
 			}
 			outIdx := i*out.Strides[0] + j*out.Strides[1]
 			out.Data[outIdx] = sum
+		}
+	}
+
+	return out
+}
+
+func Transpose(t *Tensor) *Tensor {
+	if len(t.Shape) != 2 {
+		panic("tensors: Transpose currently supports 2D matrices only")
+	}
+
+	rows, cols := t.Shape[0], t.Shape[1]
+	out := New(cols, rows)
+
+	for i := 0; i < rows; i++ {
+		for j := 0; j < cols; j++ {
+			out.Data[j*rows+i] = t.Data[i*cols+j]
 		}
 	}
 
@@ -201,45 +274,106 @@ func (t *Tensor) Tanh() *Tensor {
 	return out
 }
 
-// This function is to beautify showing the tensors in the output hehe!! :)
+// String provides a PyTorch-like string representation of the Tensor.
 func (t *Tensor) String() string {
-	if len(t.Shape) == 0 {
+	if t == nil || len(t.Data) == 0 {
 		return "Tensor([])"
 	}
 
-	if len(t.Shape) == 1 {
-		strVals := make([]string, len(t.Data))
-		for i, v := range t.Data {
-			strVals[i] = fmt.Sprintf("%.4f", v)
+	// 1. Format Extra Metadata (RequiresGrad & Grad.Data)
+	var metaParts []string
+	if t.RequiresGrad {
+		metaParts = append(metaParts, "requires_grad=true")
+		if t.Grad != nil && len(t.Grad.Data) > 0 {
+			gradStr := formatSlice(t.Grad.Data, 6)
+			metaParts = append(metaParts, fmt.Sprintf("grad=[%s]", gradStr))
 		}
-		return fmt.Sprintf("Tensor([%s])", strings.Join(strVals, ", "))
 	}
 
+	metaSuffix := ""
+	if len(metaParts) > 0 {
+		metaSuffix = ", " + strings.Join(metaParts, ", ")
+	}
+
+	// 2. 0D / Scalar or Empty Shape
+	if len(t.Shape) == 0 {
+		return fmt.Sprintf("Tensor(%.4f%s)", t.Data[0], metaSuffix)
+	}
+
+	// 3. 1D Vector
+	if len(t.Shape) == 1 {
+		return fmt.Sprintf("Tensor([%s]%s)", formatSlice(t.Data, 6), metaSuffix)
+	}
+
+	// 4. 2D Matrix
 	if len(t.Shape) == 2 {
 		rows, cols := t.Shape[0], t.Shape[1]
+
+		// Ensure strides exist to avoid index panics
+		stride0, stride1 := cols, 1
+		if len(t.Strides) == 2 {
+			stride0, stride1 = t.Strides[0], t.Strides[1]
+		}
+
 		var sb strings.Builder
 		sb.WriteString("Tensor([\n")
 
+		maxRowsToShow := 8
+		truncateRows := rows > maxRowsToShow
+
 		for i := 0; i < rows; i++ {
-			sb.WriteString("  [")
-			rowVals := make([]string, cols)
-			for j := 0; j < cols; j++ {
-				idx := i*t.Strides[0] + j*t.Strides[1]
-				rowVals[j] = fmt.Sprintf("%.4f", t.Data[idx])
+			if truncateRows && i >= 4 && i < rows-4 {
+				if i == 4 {
+					sb.WriteString("  ...\n")
+				}
+				continue
 			}
-			sb.WriteString(strings.Join(rowVals, ", "))
+
+			sb.WriteString("  [")
+			rowVals := make([]float64, cols)
+			for j := 0; j < cols; j++ {
+				idx := i*stride0 + j*stride1
+				if idx < len(t.Data) {
+					rowVals[j] = t.Data[idx]
+				}
+			}
+			sb.WriteString(formatSlice(rowVals, 6))
 			sb.WriteString("]")
 			if i < rows-1 {
 				sb.WriteString(",\n")
 			}
 		}
-		sb.WriteString(fmt.Sprintf("\n], shape=%v)", t.Shape))
+		sb.WriteString(fmt.Sprintf("\n], shape=%v%s)", t.Shape, metaSuffix))
 		return sb.String()
 	}
 
-	strVals := make([]string, len(t.Data))
-	for i, v := range t.Data {
-		strVals[i] = fmt.Sprintf("%.4f", v)
+	// 5. Fallback for N-dimensional Tensors
+	return fmt.Sprintf("Tensor([%s], shape=%v%s)", formatSlice(t.Data, 6), t.Shape, metaSuffix)
+}
+
+// Helper func to help display the format
+func formatSlice(data []float64, maxItems int) string {
+	if len(data) == 0 {
+		return ""
 	}
-	return fmt.Sprintf("Tensor([%s], shape=%v)", strings.Join(strVals, ", "), t.Shape)
+
+	if len(data) <= maxItems {
+		strVals := make([]string, len(data))
+		for i, v := range data {
+			strVals[i] = fmt.Sprintf("%.4f", v)
+		}
+		return strings.Join(strVals, ", ")
+	}
+
+	// Truncate long vectors (e.g. [1.0000, 2.0000, 3.0000, ..., 8.0000, 9.0000, 10.0000])
+	half := maxItems / 2
+	head := make([]string, half)
+	tail := make([]string, half)
+
+	for i := 0; i < half; i++ {
+		head[i] = fmt.Sprintf("%.4f", data[i])
+		tail[i] = fmt.Sprintf("%.4f", data[len(data)-half+i])
+	}
+
+	return fmt.Sprintf("%s, ..., %s", strings.Join(head, ", "), strings.Join(tail, ", "))
 }
