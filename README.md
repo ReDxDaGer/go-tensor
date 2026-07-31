@@ -16,13 +16,13 @@ A high-performance, lightweight N-dimensional tensor and deep learning framework
 
 ## Installation
 
-\`\`\`bash
+```bash
 go get github.com/redxdager/go-tensor
-\`\`\`
+```
 
 ## Quick Start
 
-\`\`\`go
+```go
 package main
 
 import (
@@ -45,13 +45,13 @@ func main() {
 	fmt.Println("Resulting Tensor:")
 	fmt.Println(activated)
 }
-\`\`\`
+```
 
 ## Loading Data from CSV
 
-\`go-tensor\` can now load datasets directly from CSV files and feed them through a shuffled, batched \`DataLoader\` — no manual parsing required.
+`go-tensor` can now load datasets directly from CSV files and feed them through a shuffled, batched \`DataLoader\` — no manual parsing required.
 
-\`\`\`go
+```go
 package main
 
 import (
@@ -84,24 +84,24 @@ func main() {
 		}
 	}
 }
-\`\`\`
+```
 
 ### How it works
 
 | Component | Description |
 |---|---|
-| \`dataset.LoadCSVDataset(path, targetCol, hasHeader)\` | Parses a CSV file into a \`Dataset\`, splitting each row into input features and a target column. |
-| \`dataset.Dataset\` | Interface any data source implements — just \`Len() int\` and \`Get(idx int) Sample\`. |
-| \`dataset.Sample\` | A single \`(Input, Target)\` pair, mirroring PyTorch's \`__getitem__\` convention. |
-| \`dataset.NewDataLoader(ds, batchSize, shuffle)\` | Wraps a \`Dataset\` for shuffled, batched iteration. |
-| \`loader.Reset()\` | Resets the cursor to the start of an epoch and reshuffles indices if \`shuffle\` is enabled. |
-| \`loader.HasNext()\` / \`loader.NextBatch()\` | Standard iterator pattern for pulling batches as \`*tensor.Tensor\` pairs. |
+| `dataset.LoadCSVDataset(path, targetCol, hasHeader)` | Parses a CSV file into a \`Dataset\`, splitting each row into input features and a target column. |
+| `dataset.Dataset` | Interface any data source implements — just \`Len() int\` and \`Get(idx int) Sample\`. |
+| `dataset.Sample` | A single \`(Input, Target)\` pair, mirroring PyTorch's \`__getitem__\` convention. |
+| `dataset.NewDataLoader(ds, batchSize, shuffle)` | Wraps a \`Dataset\` for shuffled, batched iteration. |
+| `loader.Reset()` | Resets the cursor to the start of an epoch and reshuffles indices if \`shuffle\` is enabled. |
+| `loader.HasNext()` / \`loader.NextBatch()\` | Standard iterator pattern for pulling batches as \`*tensor.Tensor\` pairs. |
 
 Because \`dataset.Dataset\` is just an interface, you can implement your own backing source (in-memory slices, JSON, a database cursor, etc.) and it will work with \`DataLoader\` automatically — CSV is just the built-in convenience loader.
 
 ## Project Layout
 
-\`\`\`
+```
 go-tensor/
 ├── go.mod
 ├── README.md
@@ -117,13 +117,13 @@ go-tensor/
 │   └── tensor_test.go
 └── example/
     └── main.go
-\`\`\`
+```
 
 ## Running Tests
 
-\`\`\`bash
+```bash
 go test ./... -v
-\`\`\`
+```
 
 ## Documentation
 
