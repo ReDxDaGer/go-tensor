@@ -201,8 +201,7 @@ go-tensor/
 ├── activations/
 │   └── activation_functions.go
 ├── autograd/
-│   └── engine.go
-│   └── ops.go
+│   └── autograd.go
 ├── dataset/
 │   ├── dataset.go
 │   ├── dataloader.go
